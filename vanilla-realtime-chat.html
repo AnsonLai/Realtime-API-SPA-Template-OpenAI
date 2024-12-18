@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>OpenAI Realtime Chat</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        #chat {
+            height: 500px;
+            border: 1px solid #ccc;
+            overflow-y: auto;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+        }
+
+        .message {
+            margin-bottom: 15px;
+            max-width: 80%;
+        }
+
+        .user-message {
+            margin-left: auto;
+            background-color: #007AFF;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 20px;
+            text-align: right;
+        }
+
+        .assistant-message {
+            background-color: #f1f1f1;
+            padding: 10px 15px;
+            border-radius: 20px;
+        }
+
+        .typing {
+            background-color: #f1f1f1;
+            padding: 10px 15px;
+            border-radius: 20px;
+            display: inline-block;
+        }
+
+        .typing-indicator {
+            display: inline-block;
+            width: 2px;
+            height: 15px;
+            background: #000;
+            margin-left: 3px;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0;
+            }
+        }
+
+        #input-area {
+            display: flex;
+            gap: 10px;
+        }
+
+        #message-input {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 20px;
+            font-size: 16px;
+        }
+
+        button {
+            padding: 10px 20px;
+            background-color: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+
+        button:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+
+        #mic-button {
+            width: 50px;
+            height: 50px;
+            border-radius: 25px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #mic-button.recording {
+            background-color: #ff3b30;
+        }
+
+        #status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 14px;
+        }
+
+        .connected {
+            background-color: #34c759;
+            color: white;
+        }
+
+        .disconnected {
+            background-color: #ff3b30;
+            color: white;
+        }
+
+        /* API Key Modal Styles */
+        #api-key-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .modal-content {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 500px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        #api-key-input {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 16px;
+        }
+
+        .modal-buttons {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        #api-key-button {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background-color: #007AFF;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            padding: 5px 15px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .user-transcript {
+            font-style: italic;
+            color: blue;
+            margin-bottom: 5px;
+            text-align: right;
+        }
+    </style>
+</head>
+
+<body>
+    <button id="api-key-button">Set API Key</button>
+    <div id="status">Disconnected</div>
+    <div id="chat"></div>
+    <div id="input-area">
+        <button id="mic-button">🎤</button>
+        <input type="text" id="message-input" placeholder="Type a message...">
+        <button id="send-button">Send</button>
+    </div>
+    <audio id="remote-audio" autoplay></audio>
+
+    <!-- API Key Modal -->
+    <div id="api-key-modal" style="display: none;">
+        <div class="modal-content">
+            <h2>Enter OpenAI API Key</h2>
+            <p>Your API key is used directly for the connection to OpenAI.</p>
+            <input type="password" id="api-key-input" placeholder="sk-..." autocomplete="off">
+            <div class="modal-buttons">
+                <button id="api-key-cancel">Cancel</button>
+                <button id="api-key-save">Save & Connect</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        class RealtimeChat {
+            constructor() {
+                this.pc = null; // RTCPeerConnection
+                this.dc = null; // RTCDataChannel
+                this.mediaRecorder = null;
+                this.audioContext = null;
+                this.processor = null;
+                this.isRecording = false;
+                this.apiKey = localStorage.getItem('openai-api-key') || '';
+                this.ephemeralKey = null;
+                this.responseAudioTranscripts = {}; // Store audio transcripts by response ID
+                this.userAudioTranscript = "";
+                this.isConnected = false;
+
+                // DOM elements
+                this.chatDiv = document.getElementById('chat');
+                this.micButton = document.getElementById('mic-button');
+                this.messageInput = document.getElementById('message-input');
+                this.sendButton = document.getElementById('send-button');
+                this.statusDiv = document.getElementById('status');
+                this.apiKeyModal = document.getElementById('api-key-modal');
+                this.apiKeyInput = document.getElementById('api-key-input');
+                this.apiKeyButton = document.getElementById('api-key-button');
+                this.remoteAudio = document.getElementById('remote-audio');
+
+                // Bind event listeners
+                this.micButton.addEventListener('click', () => {
+                    this.isRecording ? this.stopRecording() : this.startRecording();
+                });
+                this.sendButton.addEventListener('click', () => this.sendTextMessage());
+                this.messageInput.addEventListener('keypress', (e) => {
+                    if (e.key === 'Enter') this.sendTextMessage();
+                });
+
+                // API Key modal listeners
+                this.apiKeyButton.addEventListener('click', () => this.showApiKeyModal());
+                document.getElementById('api-key-save').addEventListener('click', () => this.saveApiKey());
+                document.getElementById('api-key-cancel').addEventListener('click', () => this.hideApiKeyModal());
+
+                // Initialize
+                this.initializeChat();
+            }
+
+            initializeChat() {
+                if (!this.apiKey) {
+                    this.showApiKeyModal();
+                }
+            }
+
+            showApiKeyModal() {
+                this.apiKeyModal.style.display = 'flex';
+                this.apiKeyInput.value = this.apiKey;
+            }
+
+            hideApiKeyModal() {
+                this.apiKeyModal.style.display = 'none';
+            }
+
+            async saveApiKey() {
+                const newKey = this.apiKeyInput.value.trim();
+                if (newKey && newKey !== this.apiKey) {
+                    this.apiKey = newKey;
+                    localStorage.setItem('openai-api-key', newKey);
+                }
+                this.hideApiKeyModal();
+            }
+
+            async connect() {
+                // Use the standard API key directly (NOT RECOMMENDED)
+                this.ephemeralKey = this.apiKey;
+
+                // Initialize WebRTC Connection
+                try {
+                    await this.initWebRTC();
+                    this.isConnected = true;
+                } catch (error) {
+                    console.error('Error initializing WebRTC:', error);
+                    this.statusDiv.textContent = 'Error: WebRTC failed';
+                    this.statusDiv.className = 'disconnected';
+                }
+            }
+
+            async initWebRTC() {
+                // Create a peer connection
+                this.pc = new RTCPeerConnection();
+
+                // Set up to play remote audio from the model
+                this.pc.ontrack = e => {
+                    if (this.remoteAudio.srcObject !== e.streams[0]) {
+                        this.remoteAudio.srcObject = e.streams[0];
+                    }
+                }
+
+                // Add local audio track for microphone input in the browser
+                const ms = await navigator.mediaDevices.getUserMedia({
+                    audio: true
+                });
+                this.pc.addTrack(ms.getTracks()[0]);
+
+                // Set up data channel for sending and receiving events
+                this.dc = this.pc.createDataChannel("oai-events");
+                this.dc.addEventListener("message", (e) => {
+                    // Realtime server events appear here!
+                    const data = JSON.parse(e.data);
+                    console.log('Received message:', data);
+                    this.handleMessage(data);
+                });
+
+                this.dc.onopen = () => {
+                    console.log('Data channel opened');
+                    this.statusDiv.textContent = 'Connected';
+                    this.statusDiv.className = 'connected';
+
+                    // Enable audio transcription for both input and output
+                    this.dc.send(JSON.stringify({
+                        type: "session.update",
+                        session: {
+                            turn_detection: {
+                                "type": "server_vad",
+                                "threshold": 0.5,
+                                "prefix_padding_ms": 300,
+                                "silence_duration_ms": 200
+                            },
+                            input_audio_transcription: {
+                                model: "whisper-1"
+                            },
+                            voice: "alloy",
+                            instructions: "Please respond entirely in French only.",
+                            modalities: ["text", "audio"],
+                            temperature: 0.8,
+                        }
+                    }));
+
+                    // Initialize session
+                    this.dc.send(JSON.stringify({
+                        type: "response.create",
+                        response: {
+                            modalities: ["text", "audio"],
+                            instructions: "Please assist the user."
+                        }
+                    }));
+                };
+
+                this.dc.onclose = () => {
+                    console.log('Data channel closed');
+                    this.statusDiv.textContent = 'Disconnected';
+                    this.statusDiv.className = 'disconnected';
+                };
+
+                this.dc.onerror = (error) => {
+                    console.error('Data channel error:', error);
+                    this.statusDiv.textContent = 'Error: Data channel error';
+                    this.statusDiv.className = 'disconnected';
+                }
+
+                // Start the session using the Session Description Protocol (SDP)
+                const offer = await this.pc.createOffer();
+                await this.pc.setLocalDescription(offer);
+
+                const baseUrl = "https://api.openai.com/v1/realtime";
+                const model = "gpt-4o-realtime-preview-2024-10-01";
+                const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
+                    method: "POST",
+                    body: offer.sdp,
+                    headers: {
+                        Authorization: `Bearer ${this.ephemeralKey}`,
+                        "Content-Type": "application/sdp"
+                    },
+                });
+
+                const answer = {
+                    type: "answer",
+                    sdp: await sdpResponse.text(),
+                };
+                await this.pc.setRemoteDescription(answer);
+            }
+
+            handleMessage(event) {
+                switch (event.type) {
+                    case 'response.text.delta':
+                        this.appendAssistantText(event.delta.text);
+                        break;
+                    case 'response.audio_transcript.delta':
+                        this.appendResponseAudioTranscript(event);
+                        break;
+                    case 'conversation.item.input_audio_transcription.delta':
+                        this.appendUserAudioTranscript(event);
+                        break;
+                    case 'conversation.item.input_audio_transcription.completed':
+                        this.completeUserAudioTranscript(event);
+                        break;
+                    case 'error':
+                        console.error('API Error:', event.error);
+                        break;
+                }
+            }
+
+            async startRecording() {
+                if (!this.apiKey) {
+                    this.showApiKeyModal();
+                    return;
+                }
+                if (!this.isConnected) {
+                    await this.connect();
+                }
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    this.audioContext = new AudioContext({ sampleRate: 16000 });
+                    const source = this.audioContext.createMediaStreamSource(stream);
+
+                    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+                    source.connect(this.processor);
+                    this.processor.connect(this.audioContext.destination);
+
+                    this.processor.onaudioprocess = (e) => {
+                        if (this.dc?.readyState === 'open') {
+                            const inputData = e.inputBuffer.getChannelData(0);
+                            const pcmData = new Float32Array(inputData);
+
+                            // Convert to Int16 and create a new ArrayBuffer
+                            const int16Data = new Int16Array(pcmData.length);
+                            for (let i = 0; i < pcmData.length; i++) {
+                                int16Data[i] = this.floatToInt16(pcmData[i]);
+                            }
+
+                            this.dc.send(JSON.stringify({
+                                type: 'input_audio_buffer.append',
+                                audio: Array.from(int16Data)
+                            }));
+                        }
+                    };
+
+                    this.isRecording = true;
+                    this.micButton.textContent = '⏹️';
+                    this.micButton.classList.add('recording');
+                } catch (err) {
+                    console.error('Error accessing microphone:', err);
+                }
+            }
+
+            stopRecording() {
+                if (this.processor) {
+                    this.processor.disconnect();
+                    this.processor = null;
+                }
+                if (this.audioContext) {
+                    this.audioContext.close();
+                    this.audioContext = null;
+                }
+
+                if (this.pc && this.dc) {
+                    this.pc.close();
+                    this.dc.close();
+                    this.pc = null;
+                    this.dc = null;
+                }
+
+                this.isConnected = false;
+                this.isRecording = false;
+                this.micButton.textContent = '🎤';
+                this.micButton.classList.remove('recording');
+
+                if (this.dc?.readyState === 'open') {
+                    this.dc.send(JSON.stringify({
+                        type: 'input_audio_buffer.commit'
+                    }));
+                    this.dc.send(JSON.stringify({
+                        type: 'response.create'
+                    }));
+                }
+            }
+
+            sendTextMessage() {
+                if (!this.isConnected) {
+                    alert("Please connect to OpenAI first by clicking the microphone button and enabling audio.");
+                    return;
+                }
+                const text = this.messageInput.value.trim();
+                if (!text || !this.dc) return;
+
+                this.appendMessage(text, true);
+
+                this.dc.send(JSON.stringify({
+                    type: "conversation.item.create",
+                    item: {
+                        type: "message",
+                        role: "user",
+                        content: [{
+                            type: "input_text",
+                            text: text
+                        }]
+                    }
+                }));
+
+                this.dc.send(JSON.stringify({
+                    type: "response.create"
+                }));
+
+                this.messageInput.value = '';
+            }
+
+            appendMessage(text, isUser = false) {
+                const messageDiv = document.createElement('div');
+                messageDiv.className = `message ${isUser ? 'user-message' : 'assistant-message'}`;
+                messageDiv.textContent = text;
+                this.chatDiv.appendChild(messageDiv);
+                this.chatDiv.scrollTop = this.chatDiv.scrollHeight;
+            }
+
+            appendAssistantText(text) {
+                let typingDiv = this.chatDiv.querySelector('.typing');
+                if (!typingDiv) {
+                    typingDiv = document.createElement('div');
+                    typingDiv.className = 'typing';
+                    const indicator = document.createElement('span');
+                    indicator.className = 'typing-indicator';
+                    typingDiv.appendChild(indicator);
+                    this.chatDiv.appendChild(typingDiv);
+                }
+
+                // Insert text before the typing indicator
+                const textNode = typingDiv.firstChild;
+                if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                    textNode.textContent += text;
+                } else {
+                    typingDiv.insertBefore(document.createTextNode(text), typingDiv.firstChild);
+                }
+
+                this.chatDiv.scrollTop = this.chatDiv.scrollHeight;
+            }
+
+            appendUserAudioTranscript(event) {
+                const { delta, item_id } = event;
+
+                // Find or create the transcript div for this item_id
+                let transcriptDiv = this.chatDiv.querySelector(`.user-transcript[data-item-id="${item_id}"]`);
+                if (!transcriptDiv) {
+                    transcriptDiv = document.createElement('div');
+                    transcriptDiv.className = 'message user-transcript';
+                    transcriptDiv.dataset.itemId = item_id;
+                    this.chatDiv.appendChild(transcriptDiv);
+
+                    // Insert this new transcript div before the assistant's response
+                    const assistantResponse = this.chatDiv.querySelector(`.assistant-message`);
+                    if (assistantResponse) {
+                        this.chatDiv.insertBefore(transcriptDiv, assistantResponse);
+                    }
+                }
+
+                // Append the delta to the transcript
+                transcriptDiv.textContent += delta;
+                this.chatDiv.scrollTop = this.chatDiv.scrollHeight;
+            }
+
+            completeUserAudioTranscript(event) {
+                const { transcript, item_id } = event;
+
+                // Find the transcript div for this item_id and update its text
+                let transcriptDiv = this.chatDiv.querySelector(`.user-transcript[data-item-id="${item_id}"]`);
+                if (!transcriptDiv) {
+                    // If the transcriptDiv doesn't exist, create it now
+                    transcriptDiv = document.createElement('div');
+                    transcriptDiv.className = 'message user-transcript';
+                    transcriptDiv.dataset.itemId = item_id;
+
+                    // Insert this new transcript div before the assistant's response
+                    const assistantResponse = this.chatDiv.querySelector(`.assistant-message`);
+                    if (assistantResponse) {
+                        this.chatDiv.insertBefore(transcriptDiv, assistantResponse);
+                    } else {
+                        // If there's no assistant response yet, just append it
+                        this.chatDiv.appendChild(transcriptDiv);
+                    }
+                }
+
+                // Update the text content (whether it was found or created)
+                transcriptDiv.textContent = transcript;
+                this.chatDiv.scrollTop = this.chatDiv.scrollHeight;
+            }
+
+            appendResponseAudioTranscript(event) {
+                const { response_id, delta } = event;
+
+                // Initialize the transcript for this response if it doesn't exist
+                if (!this.responseAudioTranscripts[response_id]) {
+                    this.responseAudioTranscripts[response_id] = "";
+                }
+
+                // Append the delta
+                this.responseAudioTranscripts[response_id] += delta;
+
+                // Display or update the transcript in the UI
+                let transcriptDiv = this.chatDiv.querySelector(`.audio-transcript[data-response-id="${response_id}"]`);
+                if (!transcriptDiv) {
+                    transcriptDiv = document.createElement('div');
+                    transcriptDiv.className = 'message audio-transcript';
+                    transcriptDiv.dataset.responseId = response_id;
+                    this.chatDiv.appendChild(transcriptDiv);
+                }
+                transcriptDiv.textContent = this.responseAudioTranscripts[response_id];
+                this.chatDiv.scrollTop = this.chatDiv.scrollHeight;
+            }
+
+            floatToInt16(floatVal) {
+                const int16Val = floatVal * 32767;
+                return Math.max(-32768, Math.min(32767, int16Val));
+            }
+        }
+
+        const chat = new RealtimeChat();
+    </script>
+</body>
+
+</html>
